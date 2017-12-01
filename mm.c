@@ -89,20 +89,26 @@ int mm_init(void)
     return -1;
   }
   PUT(heap_listp, 0);                                                           /* Alignment padding */
-  PUT(heap_listp + (1*WSIZE), PACK(OVERHEAD, 1));                               /* Prologue header */
+  PUT(heap_listp + (WSIZE), PACK(OVERHEAD, 1));                               /* Prologue header */
   PUT(heap_listp + (2*WSIZE), 0);                                               /* Previous pointer */
   PUT(heap_listp + (3*WSIZE), 0);                                               /* Next Pointer */
   PUT(heap_listp + OVERHEAD, PACK(OVERHEAD, 1));                                /* Prologue footer */
   PUT(heap_listp + OVERHEAD + WSIZE, PACK(0, 1));                               /* Epilogue Header */
+  //point free list right before epilogue
+  heap_listp += (DSIZE);
   free_listp = heap_listp + (DSIZE);
-  heap_listp = (heap_listp + (2*WSIZE));
 
   mm_check();
+  exit(0);
+  /*
+  printf("Print header addr: %d \n", GET(HDRP(heap_listp)));
+  printf("Print footer addr: %d \n", GET(FTRP(heap_listp))); */
 
   /* Extend the empty heap with a free block of CHUNKSIZE bytes */
   if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
   return -1;
-
+  /*mm_check();
+  exit(0); */
   return 0;
 }
 
@@ -350,6 +356,7 @@ static void mm_check()
   }
   /* Traverse heap_listp */
   int i = 0;
+
   for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp))
   {
     if (i == 0)
@@ -360,8 +367,7 @@ static void mm_check()
     printblock(bp);
     checkblock(bp);
   }
-  printblock(bp);
-  checkblock(bp);
+
   /*Check for epilogue header */
 
   if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
@@ -371,7 +377,9 @@ static void mm_check()
 
   /* Traverse list of free blocks */
   int j = 0;
-  for (bp = free_listp; GET_ALLOC(HDRP(bp)) == 0; bp = NEXT_FREEP(bp))
+  /* free_listp traversal is seg faulting */
+  bp = free_listp;
+  while (bp != NULL)
   {
     if (j == 0)
     {
@@ -380,7 +388,9 @@ static void mm_check()
     }
     printblock(bp);
     checkblock(bp);
+    bp = NEXT_FREEP(bp);
   }
+
 }
 
 static void printblock(void *bp) /* change later on */
