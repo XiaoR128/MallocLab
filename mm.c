@@ -51,16 +51,18 @@ team_t team = {
 #define GET_ALLOC(p)        (GET(p) & 0x1)
 #define HDRP(bp)            ((char *)(bp) - WSIZE)
 #define FTRP(bp)            ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
-#define NEXT_BLKP(bp)       ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp)       ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
-//
-#define NEXT_FREEP(ptr)     (*(char **)((char *)(ptr) + DSIZE))
+#define NEXT_BLKP(bp)       ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
+
+/* Free list pointers */
 #define PREV_FREEP(ptr)     (*(char **)((char * )(ptr)))
-#define OVERHEAD            16
+#define NEXT_FREEP(ptr)     (*(char **)((char *)(ptr) + DSIZE))
+
+#define OVERHEAD 16
 
 
-static char *heap_listp = 0;
-static char *free_listp = 0;
+static char *heap_listp; /* For checking, must point to the beginning of the list */
+static char *free_listp; /*Set a limit for free_listp to make it easier to traverse */
 
 static void *extend_heap(size_t words);
 static void place(void *bp, size_t asize);
@@ -70,7 +72,7 @@ static void printblock(void *bp);
 static void checkblock(void *bp);
 static void mm_check();
 static void remove_block(void *bp);
-static void insert_at_front(void *bp);
+static void add_block(void *bp);
 
 
 /*
@@ -98,17 +100,13 @@ int mm_init(void)
   heap_listp += (DSIZE);
   free_listp = heap_listp + (DSIZE);
 
-  mm_check();
-  exit(0);
   /*
   printf("Print header addr: %d \n", GET(HDRP(heap_listp)));
   printf("Print footer addr: %d \n", GET(FTRP(heap_listp))); */
 
   /* Extend the empty heap with a free block of CHUNKSIZE bytes */
   if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
-  return -1;
-  /*mm_check();
-  exit(0); */
+      return -1;
   return 0;
 }
 
@@ -148,11 +146,10 @@ void *mm_malloc(size_t size)
 }
 
 /*
-* mm_free - Freeing a block does nothing.
+* mm_free
 */
 void mm_free(void *bp)
 {
- //printf("starting free \n");
 
   if (!bp){
     return;
@@ -160,49 +157,55 @@ void mm_free(void *bp)
 
   size_t size = GET_SIZE(HDRP(bp));
 
-  PUT(HDRP(bp), PACK(size, 0));
-  PUT(FTRP(bp), PACK(size, 0));
+  PUT(HDRP(bp), PACK(size, 0)); /* set header */
+  PUT(FTRP(bp), PACK(size, 0)); /* set footer */
   coalesce(bp);
 
 }
 
 static void *coalesce(void *bp)
 {
-
-  size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp))) || PREV_BLKP(bp) == bp;
+  size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+  if (PREV_BLKP(bp) == bp)
+  {
+    /*one block in list: will point to itself */
+    prev_alloc = 1; /* we already know bp is allocated */
+  }
   size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
   size_t size = GET_SIZE(HDRP(bp));
 
 
   if (prev_alloc && !next_alloc)        /* Case 2 */
   {
-    size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
     remove_block(NEXT_BLKP(bp));
+    size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
     PUT(HDRP(bp), PACK(size, 0));
     PUT(FTRP(bp), PACK(size, 0));
+    printf("Running Case 2 of coalesce \n");
   }
 
   else if (!prev_alloc && next_alloc)       /* Case 3 */
   {
+    remove_block(PREV_BLKP(bp));
     size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-    bp = PREV_BLKP(bp);
-    remove_block(bp);
     PUT(HDRP(bp), PACK(size, 0));
     PUT(FTRP(bp), PACK(size, 0));
+    printf("Running Case 3 of coalesce \n");
   }
   else if (!prev_alloc && !next_alloc)                                      /* Case 4*/
   {
-    size += GET_SIZE(HDRP(PREV_BLKP(bp))) +
-    GET_SIZE(HDRP(NEXT_BLKP(bp)));
     remove_block(PREV_BLKP(bp));
     remove_block(NEXT_BLKP(bp));
+    size += GET_SIZE(HDRP(PREV_BLKP(bp))) +
+    GET_SIZE(HDRP(NEXT_BLKP(bp)));
     bp = PREV_BLKP(bp);
     PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
     PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+    printf("Running Case 4 of coalesce \n");
   }
-
-  insert_at_front(bp);
-  return bp;
+  printf("Running default case of coalesce \n");
+  add_block(bp);
+  return(bp); /*seg faulting because bp is null */
 }
 
 /*
@@ -268,6 +271,7 @@ static void *extend_heap(size_t words)
 
   /* Allocate an even number of words to maintain alignment */
   size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
+  /*Fill out size to prevent fragmentation */
   if (size < OVERHEAD) {
     size = OVERHEAD;
   }
@@ -290,6 +294,7 @@ static void place(void *bp, size_t asize)
   size_t csize = GET_SIZE(HDRP(bp));
 
   if ((csize - asize) >= (OVERHEAD)) {
+    printf("Running first if of place \n");
     PUT(HDRP(bp), PACK(asize, 1));
     PUT(FTRP(bp), PACK(asize, 1));
     remove_block(bp);
@@ -329,17 +334,30 @@ static void remove_block(void *bp)
   PREV_FREEP(NEXT_FREEP(bp)) = PREV_FREEP(bp);
 }
 
-static void insert_at_front(void *bp) {
+/* add_block adds a block to the beginning of the free_list */
+
+static void add_block(void *bp) {
+  void *heap_ptr = heap_listp;
+
   NEXT_FREEP(bp) = free_listp;
-
   PREV_FREEP(free_listp) = bp;
-
-  PREV_FREEP(bp) = NULL;
+  //PREV_FREEP(bp) = NULL;
   free_listp = bp;
+
+/*
+  heap_listp = bp;
+  GET(NEXT_BLKP(bp)) = heap_listp;
+  GET(PREV_BLKP(heap_listp)) = bp;
+  free_listp = bp; */
 }
 /*
-* mm_checkheap - Check the heap for consistency (not checking free_listp list)
+* mm_check - Check the heap for consistency
 */
+
+/*
+static void add_block(void *bp) {
+  /* Sort through sizes of blocks
+} */
 
 static void mm_check()
 {
@@ -352,11 +370,11 @@ static void mm_check()
   printblock(heap_listp);
   if (!GET_ALLOC(HDRP(heap_listp)))
   {
-    printf("Error: Prologue Header not allocated");
+    printf("Error: Prologue Header not allocated \n");
+    printf("Printing address of header: %d \n", GET(HDRP(heap_listp)));
   }
   /* Traverse heap_listp */
   int i = 0;
-
   for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp))
   {
     if (i == 0)
@@ -387,7 +405,7 @@ static void mm_check()
       j+=1;
     }
     printblock(bp);
-    checkblock(bp);
+    checkblock(bp); /* header does not match footer error */
     bp = NEXT_FREEP(bp);
   }
 
@@ -420,4 +438,6 @@ static void checkblock(void *bp) /* change later on */
 
   if (GET(HDRP(bp)) != GET(FTRP(bp)))
   printf("Error: header does not match footer\n");
+  printf("Printing address of header: %d \n", GET(HDRP(bp)));
+  printf("Printing address of footer: %d\n", GET(FTRP(bp)));
 }
