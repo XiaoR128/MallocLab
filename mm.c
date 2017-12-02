@@ -45,10 +45,10 @@ team_t team = {
 #define CHUNKSIZE           (1<<12)
 #define MAX(x,y)            ((x) > (y)? (x) : (y))
 #define PACK(size, alloc)   ((size) | (alloc))
-#define GET(p)              (*(unsigned int *)(p))
-#define PUT(p, val)         (*(unsigned int *)(p) = (val))
-#define GET_SIZE(p)         (GET(p) & ~0x7)
-#define GET_ALLOC(p)        (GET(p) & 0x1)
+#define GET(bp)              (*(unsigned int *)(bp))
+#define PUT(bp, val)         (*(unsigned int *)(bp) = (val))
+#define GET_SIZE(bp)         (GET(bp) & ~0x7)
+#define GET_ALLOC(bp)        (GET(bp) & 0x1)
 #define HDRP(bp)            ((char *)(bp) - WSIZE)
 #define FTRP(bp)            ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
 
@@ -79,7 +79,7 @@ static void printblock(void *bp);
 static void checkblock(void *bp);
 static void mm_check();
 static void remove_block(void *bp);
-static void add_block(void *bp);
+static void* add_block(void *bp, size_t asize);
 
 
 /*
@@ -211,7 +211,7 @@ static void *coalesce(void *bp)
     PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
   }
 
-  add_block(bp);
+  add_block(bp, size);
   return bp;
 }
 
@@ -288,8 +288,8 @@ static void *extend_heap(size_t words)
   PUT(HDRP(bp), PACK(size, 0));               /* Free block header */
   PUT(FTRP(bp), PACK(size, 0));               /* Free block footer */
   PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));       /* New epilogue header */
-  add_block(bp, asize);
-
+  add_block(bp, size);
+  exit(0);
   return coalesce(bp);
 }
 
@@ -333,13 +333,13 @@ static void remove_block(void *bp)
   return;
 }
 
-static void add_block(void *bp, size_t asize) {
+static void* add_block(void *bp, size_t asize) {
   /*Find the class the block belongs in */
   int findClass = 0;
   char *search = bp;
   char *insert = NULL;
 
-  for (findClass; ()(findClass < MAX_SEGLIST_SIZE - 1) && (asize > 1)); findClass++)
+  for (; ((findClass < MAX_SEGLIST_SIZE - 1) && (asize > 1)); findClass++)
   {
     asize = asize / 2; /*All lists are sorted by powers of 2 */
   }
@@ -347,19 +347,46 @@ static void add_block(void *bp, size_t asize) {
   search = seg_list[findClass];
 
   /*Search through linked list and insert block; keep blogs in ascending order */
-  while (search != NULL)
+  while ((search != NULL) && (asize > GET_SIZE(HDRP(search))))
   {
-    if (asize > GET_SIZE(HDRP(search)))
+    insert = search;
+    search = PREV_SEGP(search);
+  }
+  /* Ugh too many pointers. Make sure everything on the list is right */
+  if (search != NULL) /* Watch out for null access errors!!!*/
+  {
+    if (insert)
     {
-      insert = search;
-      search = PREV_SEGP(search);
+      PUT(PREV_SEGP(bp),(unsigned int)search);
+      PUT(NEXT_SEGP(search),(unsigned int)bp);
+      PUT(NEXT_SEGP(bp),(unsigned int)insert);
+      PUT(PREV_SEGP(insert),(unsigned int)bp);
+    }
+    else
+    {
+      PUT(PREV_SEGP(bp),(unsigned int)search);
+      PUT(NEXT_SEGP(search),(unsigned int)bp);
+      PUT(NEXT_SEGP(bp),(unsigned int)NULL);
+      seg_list[findClass] = bp;
     }
   }
-
-  /* Ugh to many pointers. Make sure everything on the list is right */
-
+  else
+  {
+    if (insert)
+    {
+      PUT(PREV_SEGP(bp),(unsigned int)NULL);
+      PUT(NEXT_SEGP(bp),(unsigned int)insert);
+      PUT(PREV_SEGP(insert),(unsigned int)bp);
+    }
+    else
+    {
+      PUT(PREV_SEGP(bp),(unsigned int)NULL);
+      PUT(NEXT_SEGP(bp),(unsigned int)NULL);
+      seg_list[findClass] = bp;
+    }
+  }
   /*Finds the block's place within the linked list */
-  return;
+  return bp;
 }
 /*
 * mm_checkheap - Check the heap for consistency (not checking free_listp list)
