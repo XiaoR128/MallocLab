@@ -275,6 +275,9 @@ static void *extend_heap(size_t words)
 {
   char *bp;
   size_t size;
+  size_t asize = ALIGN(size);
+  printf("This is size %d \n", size);
+  printf("This is asize %d \n", asize);
 
   /* Allocate an even number of words to maintain alignment */
   size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
@@ -284,6 +287,8 @@ static void *extend_heap(size_t words)
   if ((long)(bp = mem_sbrk(size)) == -1){
   return NULL;
 }
+printf("Check bp: %d \n",GET_SIZE(bp));
+exit(0);
 
   PUT(HDRP(bp), PACK(size, 0));               /* Free block header */
   PUT(FTRP(bp), PACK(size, 0));               /* Free block footer */
@@ -337,7 +342,9 @@ static void* add_block(void *bp, size_t asize) {
   /*Find the class the block belongs in */
   int findClass = 0;
   char *search = bp;
+  printf("This is bp %d \n", GET(bp));
   char *insert = NULL;
+  int insertNotNull = 0;
 
   for (; ((findClass < MAX_SEGLIST_SIZE - 1) && (asize > 1)); findClass++)
   {
@@ -346,16 +353,25 @@ static void* add_block(void *bp, size_t asize) {
 
   search = seg_list[findClass];
 
+  int searchNotNull = 0;
+  int sizeCheck;
+
   /*Search through linked list and insert block; keep blogs in ascending order */
   while ((search != NULL) && (asize > GET_SIZE(HDRP(search))))
   {
+    sizeCheck = GET_SIZE(HDRP(search));
     insert = search;
+    insertNotNull = 1;
     search = PREV_SEGP(search);
   }
-  /* Ugh too many pointers. Make sure everything on the list is right */
-  if (search != NULL) /* Watch out for null access errors!!!*/
+  if (asize < sizeCheck)
   {
-    if (insert)
+    searchNotNull = 1;
+  }
+  /* Ugh too many pointers. Make sure everything on the list is right */
+  if (searchNotNull) /* Watch out for null access errors!!!*/
+  {
+    if (insertNotNull) /* Now this is seg faulting */
     {
       PUT(PREV_SEGP(bp),(unsigned int)search);
       PUT(NEXT_SEGP(search),(unsigned int)bp);
@@ -372,7 +388,7 @@ static void* add_block(void *bp, size_t asize) {
   }
   else
   {
-    if (insert)
+    if (insertNotNull)
     {
       PUT(PREV_SEGP(bp),(unsigned int)NULL);
       PUT(NEXT_SEGP(bp),(unsigned int)insert);
@@ -380,8 +396,8 @@ static void* add_block(void *bp, size_t asize) {
     }
     else
     {
-      PUT(PREV_SEGP(bp),(unsigned int)NULL);
-      PUT(NEXT_SEGP(bp),(unsigned int)NULL);
+      //PUT(PREV_SEGP(bp),(unsigned int)NULL); /*This is seg faulting */
+      //PUT(NEXT_SEGP(bp),(unsigned int)NULL);
       seg_list[findClass] = bp;
     }
   }
