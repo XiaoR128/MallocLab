@@ -95,14 +95,16 @@ int mm_init(void)
 
   /* Create the initial empty heap(free list) */
   /*Allocate memory for prologue and epilogue */
-  if ((heap_listp = mem_sbrk(OVERHEAD)) == (void *)-1){
-    return -1;
-  }
+
 
   /* initialize segregated list */
   for (int i = 0; i < MAX_SEGLIST_SIZE; i++)
   {
     seg_list[i] = (char *)NULL;
+  }
+
+  if ((heap_listp = mem_sbrk(OVERHEAD)) == (void *)-1){
+    return -1;
   }
 
   seg_list[0] = heap_listp; /*Everything is free, store first block into seg_list */
@@ -112,7 +114,7 @@ int mm_init(void)
   PUT(heap_listp + (2*WSIZE), PACK(OVERHEAD, 1));                                /* Prologue footer (4 bytes)*/
   /*Prologue together header + footer = 8 */
   PUT(heap_listp + (3*WSIZE), PACK(0, 1));                                       /* Epilogue Header (4 bytes)*/
-  heap_listp = (heap_listp + (2*WSIZE));
+  //heap_listp = (heap_listp + (2*WSIZE));
 
 /* Extend the empty heap with a free block of CHUNKSIZE bytes */
   if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
@@ -274,26 +276,20 @@ void *mm_realloc(void *ptr, size_t size)
 static void *extend_heap(size_t words)
 {
   char *bp;
-  size_t size;
-  size_t asize = ALIGN(size);
-  printf("This is size %d \n", size);
+  size_t asize = ALIGN(words);
+  printf("This is words %d \n", words);
   printf("This is asize %d \n", asize);
 
   /* Allocate an even number of words to maintain alignment */
-  size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
-  if (size < OVERHEAD) {
-    size = OVERHEAD;
-  }
-  if ((long)(bp = mem_sbrk(size)) == -1){
+  if ((long)(bp = mem_sbrk(asize)) == -1){
   return NULL;
 }
-printf("Check bp: %d \n",GET_SIZE(bp));
 exit(0);
 
-  PUT(HDRP(bp), PACK(size, 0));               /* Free block header */
-  PUT(FTRP(bp), PACK(size, 0));               /* Free block footer */
+  PUT(HDRP(bp), PACK(asize, 0));               /* Free block header */
+  PUT(FTRP(bp), PACK(asize, 0));               /* Free block footer */
   PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));       /* New epilogue header */
-  add_block(bp, size);
+  add_block(bp, asize);
   exit(0);
   return coalesce(bp);
 }
@@ -396,8 +392,8 @@ static void* add_block(void *bp, size_t asize) {
     }
     else
     {
-      //PUT(PREV_SEGP(bp),(unsigned int)NULL); /*This is seg faulting */
-      //PUT(NEXT_SEGP(bp),(unsigned int)NULL);
+      PUT(PREV_SEGP(bp),(unsigned int)NULL); /*This is seg faulting */
+      PUT(NEXT_SEGP(bp),(unsigned int)NULL);
       seg_list[findClass] = bp;
     }
   }
