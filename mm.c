@@ -40,6 +40,7 @@ team_t team = {
 #define WSIZE                   4
 #define DSIZE                   8
 #define CHUNKSIZE               (1<<12)
+#define OVERHEAD                16
 
 #define MAX_SEGLIST_SIZE        10
 #define REALLOC_BUFFER          (1<<7)
@@ -49,11 +50,11 @@ team_t team = {
 
 #define PACK(size, alloc) ((size) | (alloc))
 
-#define GET(p)                  (*(unsigned int *)(p))
-#define PUT(p, val)       (*(unsigned int *)(p) = (val))
-#define PUT_SEG_LIST(p, val)    (*(unsigned int *)(p) = (val) | GET_TAG(p))
+#define GET(bp)                  (*(unsigned int *)(bp))
+#define PUT(bp, val)       (*(unsigned int *)(bp) = (val))
+#define PUT_SEG_LIST(bp, val)    (*(unsigned int *)(bp) = (val) | GET_TAG(bp))
 
-#define SET_PTR(p, ptr)         (*(unsigned int *)(p) = (unsigned int)(ptr))
+#define SET_PTR(p, bp)         (*(unsigned int *)(p) = (unsigned int)(bp))
 
 #define GET_SIZE(p)             (GET(p) & ~0x7)
 #define GET_ALLOC(p)            (GET(p) & 0x1)
@@ -61,23 +62,23 @@ team_t team = {
 #define SET_RATAG(p)            (GET(p) |= 0x2)
 #define REMOVE_RATAG(p)         (GET(p) &= ~0x2)
 
-#define HDRP(ptr)               ((char *)(ptr) - WSIZE)
-#define FTRP(ptr)               ((char *)(ptr) + GET_SIZE(HDRP(ptr)) - DSIZE)
-#define NEXT_BLKP(ptr)          ((char *)(ptr) + GET_SIZE((char *)(ptr) - WSIZE))
-#define PREV_BLKP(ptr)          ((char *)(ptr) - GET_SIZE((char *)(ptr) - DSIZE))
-#define PREV_FREEP(ptr)           ((char *)(ptr))
-#define NEXT_FREEP(ptr)           ((char *)(ptr) + WSIZE)
+#define HDRP(bp)               ((char *)(bp) - WSIZE)
+#define FTRP(bp)               ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
+#define NEXT_BLKP(bp)          ((char *)(bp) + GET_SIZE((char *)(bp) - WSIZE))
+#define PREV_BLKP(bp)          ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE))
+#define PREV_FREEP(bp)           ((char *)(bp))
+#define NEXT_FREEP(bp)           ((char *)(bp) + WSIZE)
 
-#define PREV_SEGP(ptr)               (*(char **)(ptr))
-#define NEXT_SEGP(ptr)               (*(char **)(NEXT_FREEP(ptr)))
+#define PREV_SEGP(bp)               (*(char **)(bp))
+#define NEXT_SEGP(bp)               (*(char **)(NEXT_FREEP(bp)))
 
 void *seg_list[MAX_SEGLIST_SIZE];
 
 static void *extend_heap(size_t size);
-static void *coalesce(void *ptr);
-static void *place(void *ptr, size_t asize);
-static void add_block(void *ptr, size_t size);
-static void remove_block(void *ptr);
+static void *coalesce(void *bp);
+static void *place(void *bp, size_t asize);
+static void add_block(void *bp, size_t size);
+static void remove_block(void *bp);
 
 char *heap_listp;
 
@@ -105,62 +106,78 @@ int mm_init(void)
 
 void *mm_malloc(size_t size)
 {
-    size_t asize;
     size_t extendsize;
-    void *ptr = NULL;
+    void *bp = NULL;
+
+    if (heap_listp == 0)
+    {
+      mm_init();
+    }
 
     if (size == 0)
         return NULL;
 
-    if (size <= DSIZE) {
-        asize = 2 * DSIZE;
-    } else {
-        asize = ALIGN(size+DSIZE);
-    }
+    size_t asize = MAX(ALIGN(size) + DSIZE, OVERHEAD);
+    /* Arrange blocks by classes of 2^k*/
 
-    int list = 0;
-    size_t searchsize = asize;
-    while (list < MAX_SEGLIST_SIZE) {
-        if ((list == MAX_SEGLIST_SIZE - 1) || ((searchsize <= 1) && (seg_list[list] != NULL))) {
-            ptr = seg_list[list];
-            while ((ptr != NULL) && ((asize > GET_SIZE(HDRP(ptr))) || (GET_TAG(HDRP(ptr)))))
+    /*
+    size_t findClass = asize;
+    for (int i = 0; ((i < MAX_SEGLIST_SIZE) && (bp != NULL)); i++)
+    {
+      if (((findClass <= 1) && (seg_list[i] != NULL)) || (i == MAX_SEGLIST_SIZE - 1))
+      {
+        bp = seg_list[i];
+        while ((bp != NULL) && ((asize > GET_SIZE(HDRP(bp))) || (GET_TAG(HDRP(bp)))))
+        {
+          bp = PREV_SEGP(bp);
+        }
+      }
+      findClass = findClass / 2;
+    } */
+
+    int i = 0;
+    size_t findClass = asize;
+    while (i < MAX_SEGLIST_SIZE) {
+        if (((seg_list[i] != NULL) && (findClass <= 1)) || (i == MAX_SEGLIST_SIZE - 1)) {
+            bp = seg_list[i];
+            while ((bp != NULL) && ((asize > GET_SIZE(HDRP(bp))) || (GET_TAG(HDRP(bp)))))
             {
-                ptr = PREV_SEGP(ptr);
+                bp = PREV_SEGP(bp);
             }
-            if (ptr != NULL)
+            if (bp != NULL)
                 break;
         }
 
-        searchsize >>= 1;
-        list++;
+        findClass = findClass / 2;
+        i++;
     }
-    if (ptr == NULL) {
+    if (bp == NULL) {
         extendsize = MAX(asize, CHUNKSIZE);
 
-        if ((ptr = extend_heap(extendsize)) == NULL)
+        if ((bp = extend_heap(extendsize)) == NULL)
             return NULL;
     }
-    ptr = place(ptr, asize);
-    return ptr;
+    bp = place(bp, asize);
+    return bp;
 }
 
-void mm_free(void *ptr)
+void mm_free(void *bp)
 {
-    size_t size = GET_SIZE(HDRP(ptr));
+    size_t size = GET_SIZE(HDRP(bp));
 
-    REMOVE_RATAG(HDRP(NEXT_BLKP(ptr)));
-    PUT_SEG_LIST(HDRP(ptr), PACK(size, 0));
-    PUT_SEG_LIST(FTRP(ptr), PACK(size, 0));
+    REMOVE_RATAG(HDRP(NEXT_BLKP(bp)));
+    PUT_SEG_LIST(HDRP(bp), PACK(size, 0));
+    PUT_SEG_LIST(FTRP(bp), PACK(size, 0));
 
-    add_block(ptr, size);
-    coalesce(ptr);
+    add_block(bp, size);
+    coalesce(bp);
 
     return;
 }
 
-void *mm_realloc(void *ptr, size_t size)
+void *mm_realloc(void *bp, size_t size)
 {
-    void *new_ptr = ptr;
+    void *new_bp = bp;
     size_t new_size = size;
     int remainder;
     int extendsize;
@@ -176,11 +193,11 @@ void *mm_realloc(void *ptr, size_t size)
     }
 
     new_size += REALLOC_BUFFER;
-    block_buffer = GET_SIZE(HDRP(ptr)) - new_size;
+    block_buffer = GET_SIZE(HDRP(bp)) - new_size;
 
     if (block_buffer < 0) {
-        if (!GET_ALLOC(HDRP(NEXT_BLKP(ptr))) || !GET_SIZE(HDRP(NEXT_BLKP(ptr)))) {
-            remainder = GET_SIZE(HDRP(ptr)) + GET_SIZE(HDRP(NEXT_BLKP(ptr))) - new_size;
+        if (!GET_ALLOC(HDRP(NEXT_BLKP(bp))) || !GET_SIZE(HDRP(NEXT_BLKP(bp)))) {
+            remainder = GET_SIZE(HDRP(bp)) + GET_SIZE(HDRP(NEXT_BLKP(bp))) - new_size;
             if (remainder < 0) {
                 extendsize = MAX(-remainder, CHUNKSIZE);
                 if (extend_heap(extendsize) == NULL)
@@ -188,45 +205,49 @@ void *mm_realloc(void *ptr, size_t size)
                 remainder += extendsize;
             }
 
-            remove_block(NEXT_BLKP(ptr));
+            remove_block(NEXT_BLKP(bp));
 
-            PUT(HDRP(ptr), PACK(new_size + remainder, 1));
-            PUT(FTRP(ptr), PACK(new_size + remainder, 1));
+            PUT(HDRP(bp), PACK(new_size + remainder, 1));
+            PUT(FTRP(bp), PACK(new_size + remainder, 1));
         } else {
-            new_ptr = mm_malloc(new_size - DSIZE);
-            memcpy(new_ptr, ptr, MIN(size, new_size));
-            mm_free(ptr);
+            new_bp = mm_malloc(new_size - DSIZE);
+            memcpy(new_bp, bp, MIN(size, new_size));
+            mm_free(bp);
         }
-        block_buffer = GET_SIZE(HDRP(new_ptr)) - new_size;
+        block_buffer = GET_SIZE(HDRP(new_bp)) - new_size;
     }
 
     if (block_buffer < 2 * REALLOC_BUFFER)
-        SET_RATAG(HDRP(NEXT_BLKP(new_ptr)));
-    return new_ptr;
+        SET_RATAG(HDRP(NEXT_BLKP(new_bp)));
+    return new_bp;
 }
 
 static void *extend_heap(size_t size)
 {
-    void *ptr;
-    size_t asize;
+    void *bp;
+    size_t asize = ALIGN(size);
+    /*
+    asize = (size % 2) ? (size + 1) * WSIZE : size * WSIZE;
+    if (size < OVERHEAD)
+    {
+      size = OVERHEAD;
+    } */
 
-    asize = ALIGN(size);
-
-    if ((ptr = mem_sbrk(asize)) == (void *)-1)
+    if ((bp = mem_sbrk(asize)) == (void *)-1)
         return NULL;
 
     // Set headers and footer
-    PUT(HDRP(ptr), PACK(asize, 0));
-    PUT(FTRP(ptr), PACK(asize, 0));
-    PUT(HDRP(NEXT_BLKP(ptr)), PACK(0, 1));
-    add_block(ptr, asize);
+    PUT(HDRP(bp), PACK(asize, 0));
+    PUT(FTRP(bp), PACK(asize, 0));
+    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));
+    add_block(bp, asize);
 
-    return coalesce(ptr);
+    return coalesce(bp);
 }
 
-static void add_block(void *ptr, size_t size) {
+static void add_block(void *bp, size_t size) {
     int list = 0;
-    void *search_ptr = ptr;
+    void *search_ptr = bp;
     void *insert_ptr = NULL;
 
     while ((list < MAX_SEGLIST_SIZE - 1) && (size > 1)) {
@@ -242,25 +263,25 @@ static void add_block(void *ptr, size_t size) {
 
     if (search_ptr != NULL) {
         if (insert_ptr != NULL) {
-            SET_PTR(PREV_FREEP(ptr), search_ptr);
-            SET_PTR(NEXT_FREEP(search_ptr), ptr);
-            SET_PTR(NEXT_FREEP(ptr), insert_ptr);
-            SET_PTR(PREV_FREEP(insert_ptr), ptr);
+            SET_PTR(PREV_FREEP(bp), search_ptr);
+            SET_PTR(NEXT_FREEP(search_ptr), bp);
+            SET_PTR(NEXT_FREEP(bp), insert_ptr);
+            SET_PTR(PREV_FREEP(insert_ptr), bp);
         } else {
-            SET_PTR(PREV_FREEP(ptr), search_ptr);
-            SET_PTR(NEXT_FREEP(search_ptr), ptr);
-            SET_PTR(NEXT_FREEP(ptr), NULL);
-            seg_list[list] = ptr;
+            SET_PTR(PREV_FREEP(bp), search_ptr);
+            SET_PTR(NEXT_FREEP(search_ptr), bp);
+            SET_PTR(NEXT_FREEP(bp), NULL);
+            seg_list[list] = bp;
         }
     } else {
         if (insert_ptr != NULL) {
-            SET_PTR(PREV_FREEP(ptr), NULL);
-            SET_PTR(NEXT_FREEP(ptr), insert_ptr);
-            SET_PTR(PREV_FREEP(insert_ptr), ptr);
+            SET_PTR(PREV_FREEP(bp), NULL);
+            SET_PTR(NEXT_FREEP(bp), insert_ptr);
+            SET_PTR(PREV_FREEP(insert_ptr), bp);
         } else {
-            SET_PTR(PREV_FREEP(ptr), NULL);
-            SET_PTR(NEXT_FREEP(ptr), NULL);
-            seg_list[list] = ptr;
+            SET_PTR(PREV_FREEP(bp), NULL);
+            SET_PTR(NEXT_FREEP(bp), NULL);
+            seg_list[list] = bp;
         }
     }
 
@@ -268,26 +289,26 @@ static void add_block(void *ptr, size_t size) {
 }
 
 
-static void remove_block(void *ptr) {
+static void remove_block(void *bp) {
     int list = 0;
-    size_t size = GET_SIZE(HDRP(ptr));
+    size_t size = GET_SIZE(HDRP(bp));
 
     while ((list < MAX_SEGLIST_SIZE - 1) && (size > 1)) {
         size >>= 1;
         list++;
     }
 
-    if (PREV_SEGP(ptr) != NULL) {
-        if (NEXT_SEGP(ptr) != NULL) {
-            SET_PTR(NEXT_FREEP(PREV_SEGP(ptr)), NEXT_SEGP(ptr));
-            SET_PTR(PREV_FREEP(NEXT_SEGP(ptr)), PREV_SEGP(ptr));
+    if (PREV_SEGP(bp) != NULL) {
+        if (NEXT_SEGP(bp) != NULL) {
+            SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NEXT_SEGP(bp));
+            SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), PREV_SEGP(bp));
         } else {
-            SET_PTR(NEXT_FREEP(PREV_SEGP(ptr)), NULL);
-            seg_list[list] = PREV_SEGP(ptr);
+            SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NULL);
+            seg_list[list] = PREV_SEGP(bp);
         }
     } else {
-        if (NEXT_SEGP(ptr) != NULL) {
-            SET_PTR(PREV_FREEP(NEXT_SEGP(ptr)), NULL);
+        if (NEXT_SEGP(bp) != NULL) {
+            SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), NULL);
         } else {
             seg_list[list] = NULL;
         }
@@ -296,77 +317,77 @@ static void remove_block(void *ptr) {
 }
 
 
-static void *coalesce(void *ptr)
+static void *coalesce(void *bp)
 {
-    size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(ptr)));
-    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
-    size_t size = GET_SIZE(HDRP(ptr));
+    size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp)));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    size_t size = GET_SIZE(HDRP(bp));
 
-    if (GET_TAG(HDRP(PREV_BLKP(ptr))))
+    if (GET_TAG(HDRP(PREV_BLKP(bp))))
         prev_alloc = 1;
 
     if (prev_alloc && next_alloc) {
-        return ptr;
+        return bp;
     }
     else if (prev_alloc && !next_alloc) {
-        remove_block(ptr);
-        remove_block(NEXT_BLKP(ptr));
-        size += GET_SIZE(HDRP(NEXT_BLKP(ptr)));
-        PUT_SEG_LIST(HDRP(ptr), PACK(size, 0));
-        PUT_SEG_LIST(FTRP(ptr), PACK(size, 0));
+        remove_block(bp);
+        remove_block(NEXT_BLKP(bp));
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        PUT_SEG_LIST(HDRP(bp), PACK(size, 0));
+        PUT_SEG_LIST(FTRP(bp), PACK(size, 0));
     } else if (!prev_alloc && next_alloc) {
-        remove_block(ptr);
-        remove_block(PREV_BLKP(ptr));
-        size += GET_SIZE(HDRP(PREV_BLKP(ptr)));
-        PUT_SEG_LIST(FTRP(ptr), PACK(size, 0));
-        PUT_SEG_LIST(HDRP(PREV_BLKP(ptr)), PACK(size, 0));
-        ptr = PREV_BLKP(ptr);
+        remove_block(bp);
+        remove_block(PREV_BLKP(bp));
+        size += GET_SIZE(HDRP(PREV_BLKP(bp)));
+        PUT_SEG_LIST(FTRP(bp), PACK(size, 0));
+        PUT_SEG_LIST(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
     } else {
-        remove_block(ptr);
-        remove_block(PREV_BLKP(ptr));
-        remove_block(NEXT_BLKP(ptr));
-        size += GET_SIZE(HDRP(PREV_BLKP(ptr))) + GET_SIZE(HDRP(NEXT_BLKP(ptr)));
-        PUT_SEG_LIST(HDRP(PREV_BLKP(ptr)), PACK(size, 0));
-        PUT_SEG_LIST(FTRP(NEXT_BLKP(ptr)), PACK(size, 0));
-        ptr = PREV_BLKP(ptr);
+        remove_block(bp);
+        remove_block(PREV_BLKP(bp));
+        remove_block(NEXT_BLKP(bp));
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        PUT_SEG_LIST(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        PUT_SEG_LIST(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
     }
 
-    add_block(ptr, size);
+    add_block(bp, size);
 
-    return ptr;
+    return bp;
 }
 
-static void *place(void *ptr, size_t asize)
+static void *place(void *bp, size_t asize)
 {
-    size_t ptr_size = GET_SIZE(HDRP(ptr));
+    size_t ptr_size = GET_SIZE(HDRP(bp));
     size_t remainder = ptr_size - asize;
 
-    remove_block(ptr);
+    remove_block(bp);
 
 
     if (remainder <= DSIZE * 2) {
         // Do not split block
-        PUT_SEG_LIST(HDRP(ptr), PACK(ptr_size, 1));
-        PUT_SEG_LIST(FTRP(ptr), PACK(ptr_size, 1));
+        PUT_SEG_LIST(HDRP(bp), PACK(ptr_size, 1));
+        PUT_SEG_LIST(FTRP(bp), PACK(ptr_size, 1));
     }
 
     else if (asize >= 100) {
         // Split block
-        PUT_SEG_LIST(HDRP(ptr), PACK(remainder, 0));
-        PUT_SEG_LIST(FTRP(ptr), PACK(remainder, 0));
-        PUT(HDRP(NEXT_BLKP(ptr)), PACK(asize, 1));
-        PUT(FTRP(NEXT_BLKP(ptr)), PACK(asize, 1));
-        add_block(ptr, remainder);
-        return NEXT_BLKP(ptr);
+        PUT_SEG_LIST(HDRP(bp), PACK(remainder, 0));
+        PUT_SEG_LIST(FTRP(bp), PACK(remainder, 0));
+        PUT(HDRP(NEXT_BLKP(bp)), PACK(asize, 1));
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(asize, 1));
+        add_block(bp, remainder);
+        return NEXT_BLKP(bp);
 
     }
 
     else {
-        PUT_SEG_LIST(HDRP(ptr), PACK(asize, 1));
-        PUT_SEG_LIST(FTRP(ptr), PACK(asize, 1));
-        PUT(HDRP(NEXT_BLKP(ptr)), PACK(remainder, 0));
-        PUT(FTRP(NEXT_BLKP(ptr)), PACK(remainder, 0));
-        add_block(NEXT_BLKP(ptr), remainder);
+        PUT_SEG_LIST(HDRP(bp), PACK(asize, 1));
+        PUT_SEG_LIST(FTRP(bp), PACK(asize, 1));
+        PUT(HDRP(NEXT_BLKP(bp)), PACK(remainder, 0));
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(remainder, 0));
+        add_block(NEXT_BLKP(bp), remainder);
     }
-    return ptr;
+    return bp;
 }
