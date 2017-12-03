@@ -1,15 +1,24 @@
-/* WORKING IMPLICIT LIST IMPLEMENTATION */
-/*
-* mm-naive.c - The fastest, least memory-efficient malloc package.
+/* Segmented List Implementation */
+/* 92/100 performance
 *
-* In this naive approach, a block is allocated by simply incrementing
-* the brk pointer.  A block is pure payload. There are no headers or
-* footers.  Blocks are never coalesced or reused. Realloc is
-* implemented directly using mm_malloc and mm_free.
 *
-* NOTE TO STUDENTS: Replace this header comment with your own header
-* comment that gives a high level description of your solution.
+* In this segmented list approach, the heap is essentially a large doubly linked
+* list of blocks that are tagged as free, allocated, or re-allocated. Each block
+* has a header and footer tag, which stores the size, allocation bit, and
+* reallocation bit of the block.
+*
+* Free blocks are stored on an array called seg_list and arranged in groups
+* of sizes of 2^k. This organization reduces the runtime of searching seg_list
+* to log2(n), where n is the number of blocks on the array. Free blocks are
+* distinguished from allocated blocks because they have an additional predecessor
+* and successor on the segmented free list array. These predecessor and successor
+* tags are over-written with data once the block is allocated. Each allocated block
+* also has an allocated or reallocated tag to prevent blocks from being reused.
+* Blocks are coalesced to prevent fragmentation, and an epilogue block indicates
+* the end of the heap.
+*
 */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -348,6 +357,8 @@ static void *remove_block(void *bp) { /* remove block from seg list */
 
 
 static void *coalesce(void *bp)
+/* Remove block from the heap, check its neighbors to see what needs to be moved.*/
+/* Place removed block on seg_list*/
 {
     size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
