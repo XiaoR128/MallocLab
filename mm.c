@@ -24,7 +24,7 @@
 ********************************************************/
 team_t team = {
   /* Team name */
-  "vyc229",
+  "Halp",
   /* First member's full name */
   "Victoria Cabales",
   /* First member's email address */
@@ -50,37 +50,37 @@ team_t team = {
 
 #define PACK(size, alloc) ((size) | (alloc))
 
-#define GET(bp)                  (*(unsigned int *)(bp))
-#define PUT(bp, val)       (*(unsigned int *)(bp) = (val))
-#define PUT_SEG_LIST(bp, val)    (*(unsigned int *)(bp) = (val) | GET_TAG(bp))
+#define GET(bp)                   (*(unsigned int *)(bp))      /* Read value at address */
+#define PUT(bp, val)              (*(unsigned int *)(bp) = (val))    /* Write value at address */
+#define PUT_SEG_LIST(bp, val)     (*(unsigned int *)(bp) = (val) | GET_TAG(bp)) /* Put on seg list with tag*/
+#define GET_SIZE(bp)               (GET(bp) & ~0x7) /* Read size at address */
+#define GET_ALLOC(bp)              (GET(bp) & 0x1) /* Check if block is allocated*/
 
-#define SET_PTR(p, bp)         (*(unsigned int *)(p) = (unsigned int)(bp))
+/* Tags for reallocation */
+#define GET_TAG(p)                (GET(p) & 0x2)
+#define SET_RATAG(p)              (GET(p) = GET(p) | 0x2)
+#define REMOVE_RATAG(p)           (GET(p) = GET(p) & ~0x2)
 
-#define GET_SIZE(p)             (GET(p) & ~0x7)
-#define GET_ALLOC(p)            (GET(p) & 0x1)
-#define GET_TAG(p)              (GET(p) & 0x2)
-#define SET_RATAG(p)            (GET(p) |= 0x2)
-#define REMOVE_RATAG(p)         (GET(p) &= ~0x2)
+#define HDRP(bp)                  ((char *)(bp) - WSIZE)  /* Get header */
+#define FTRP(bp)                  ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE) /* Get footer */
+#define NEXT_BLKP(bp)             ((char *)(bp) + GET_SIZE((char *)(bp) - WSIZE)) /* Next physical block on heap */
+#define PREV_BLKP(bp)             ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE)) /* Previous physical block on heap */
+#define PREV_FREEP(bp)            ((char *)(bp)) /* Previous free block on heap*/
+#define NEXT_FREEP(bp)            ((char *)(bp) + WSIZE) /* Next free block on heap */
 
-#define HDRP(bp)               ((char *)(bp) - WSIZE)
-#define FTRP(bp)               ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
-#define NEXT_BLKP(bp)          ((char *)(bp) + GET_SIZE((char *)(bp) - WSIZE))
-#define PREV_BLKP(bp)          ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE))
-#define PREV_FREEP(bp)           ((char *)(bp))
-#define NEXT_FREEP(bp)           ((char *)(bp) + WSIZE)
+#define PREV_SEGP(bp)             (*(char **)(bp))  /* Previous block on seg list */
+#define NEXT_SEGP(bp)             (*(char **)(NEXT_FREEP(bp))) /* Next block on seg list */
+#define SET_PTR(p, bp)            (*(unsigned int *)(p) = (unsigned int)(bp)) /* Set pointer on seg list*/
 
-#define PREV_SEGP(bp)               (*(char **)(bp))
-#define NEXT_SEGP(bp)               (*(char **)(NEXT_FREEP(bp)))
-
-void *seg_list[MAX_SEGLIST_SIZE];
+void *seg_list[MAX_SEGLIST_SIZE]; /* Segmented list */
 
 static void *extend_heap(size_t size);
 static void *coalesce(void *bp);
 static void *place(void *bp, size_t asize);
-static void add_block(void *bp, size_t size);
-static void remove_block(void *bp);
+static void *add_block(void *bp, size_t size);
+static void *remove_block(void *bp);
 
-char *heap_listp;
+char *heap_listp; /* Points to very first block of heap, for mm_check()*/
 
 int mm_init(void)
 {
@@ -245,57 +245,73 @@ static void *extend_heap(size_t size)
     return coalesce(bp);
 }
 
-static void add_block(void *bp, size_t size) {
-    int list = 0;
-    void *search_ptr = bp;
-    void *insert_ptr = NULL;
+static void *add_block(void *bp, size_t size) {
+    void *search = bp;
+    void *insert = NULL;
 
-    while ((list < MAX_SEGLIST_SIZE - 1) && (size > 1)) {
-        size >>= 1;
-        list++;
+    int findClass = 0;
+    while ((findClass < MAX_SEGLIST_SIZE - 1) && (size > 1)) {
+        size = size / 2; /* Find the class it belongs in within seg_list */
+        findClass++;
     }
 
-    search_ptr = seg_list[list];
-    while ((search_ptr != NULL) && (size > GET_SIZE(HDRP(search_ptr)))) {
-        insert_ptr = search_ptr;
-        search_ptr = PREV_SEGP(search_ptr);
+    search = seg_list[findClass];
+    /* Sort addresses by ascending order */
+    while ((search != NULL) && (size > GET_SIZE(HDRP(search)))) {
+        insert = search;
+        search = PREV_SEGP(search);
     }
 
-    if (search_ptr != NULL) {
-        if (insert_ptr != NULL) {
-            SET_PTR(PREV_FREEP(bp), search_ptr);
-            SET_PTR(NEXT_FREEP(search_ptr), bp);
-            SET_PTR(NEXT_FREEP(bp), insert_ptr);
-            SET_PTR(PREV_FREEP(insert_ptr), bp);
-        } else {
-            SET_PTR(PREV_FREEP(bp), search_ptr);
-            SET_PTR(NEXT_FREEP(search_ptr), bp);
-            SET_PTR(NEXT_FREEP(bp), NULL);
-            seg_list[list] = bp;
+    if (search)
+    { /* Watch out for null access errors!!! */
+        if (!insert)
+        {
+          /* printf("Running 1a of add_block/n"); */
+          SET_PTR(PREV_FREEP(bp), search);
+          SET_PTR(NEXT_FREEP(search), bp);
+          SET_PTR(NEXT_FREEP(bp), NULL);
+          seg_list[findClass] = bp;
         }
-    } else {
-        if (insert_ptr != NULL) {
-            SET_PTR(PREV_FREEP(bp), NULL);
-            SET_PTR(NEXT_FREEP(bp), insert_ptr);
-            SET_PTR(PREV_FREEP(insert_ptr), bp);
-        } else {
-            SET_PTR(PREV_FREEP(bp), NULL);
-            SET_PTR(NEXT_FREEP(bp), NULL);
-            seg_list[list] = bp;
+        else
+        {
+          /* printf("Running 1b of add_block\n"); */
+          SET_PTR(PREV_FREEP(bp), search);
+          SET_PTR(NEXT_FREEP(search), bp);
+          SET_PTR(NEXT_FREEP(bp), insert);
+          SET_PTR(PREV_FREEP(insert), bp);
         }
     }
-
-    return;
+    else if (!search)
+    {
+        if (insert) {
+            /* printf("Running 2a of add_block\n"); */
+            SET_PTR(PREV_FREEP(bp), NULL);
+            SET_PTR(NEXT_FREEP(bp), insert);
+            SET_PTR(PREV_FREEP(insert), bp);
+        } else {
+            /* printf("Running 2b of add_block\n"); */
+            SET_PTR(PREV_FREEP(bp), NULL);
+            SET_PTR(NEXT_FREEP(bp), NULL);
+            seg_list[findClass] = bp;
+        }
+    }
+    return bp;
 }
 
 
-static void remove_block(void *bp) {
-    int list = 0;
+static void *remove_block(void *bp) { /* Remove on segmented list */
+    int i = 0;
     size_t size = GET_SIZE(HDRP(bp));
 
-    while ((list < MAX_SEGLIST_SIZE - 1) && (size > 1)) {
-        size >>= 1;
-        list++;
+    /* Why does this seg fault???
+    for (int i = 0; (i < MAX_SEGLIST_SIZE) && (size > 1); i++) {
+      size = size / 2;
+    } */
+
+
+    while ((i < MAX_SEGLIST_SIZE - 1) && (size > 1)) {
+        size = size / 2;
+        i++;
     }
 
     if (PREV_SEGP(bp) != NULL) {
@@ -304,45 +320,57 @@ static void remove_block(void *bp) {
             SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), PREV_SEGP(bp));
         } else {
             SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NULL);
-            seg_list[list] = PREV_SEGP(bp);
+            seg_list[i] = PREV_SEGP(bp);
         }
     } else {
         if (NEXT_SEGP(bp) != NULL) {
             SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), NULL);
         } else {
-            seg_list[list] = NULL;
+            seg_list[i] = NULL;
         }
     }
-    return;
+    return bp;
 }
 
 
 static void *coalesce(void *bp)
 {
     size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp)));
+
+    if (GET_TAG(HDRP(PREV_BLKP(bp)))) /* Check if the previous block is allocated */
+    {
+        prev_alloc = 1;
+    }
+
+    if (PREV_BLKP(bp) == bp) /* If bp is the only block, it must be allocated */
+    {
+      prev_alloc = 1;
+    }
+
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
 
-    if (GET_TAG(HDRP(PREV_BLKP(bp))))
-        prev_alloc = 1;
-
-    if (prev_alloc && next_alloc) {
+    if (prev_alloc && next_alloc) {           /* Case 1 */
+        /* printf("Running Case 1 of coalesce \n"); */
         return bp;
     }
-    else if (prev_alloc && !next_alloc) {
+    else if (prev_alloc && !next_alloc) {     /* Case 2 */
+        /* printf("Running Case 2 of coalesce \n");*/
         remove_block(bp);
         remove_block(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        PUT_SEG_LIST(HDRP(bp), PACK(size, 0));
-        PUT_SEG_LIST(FTRP(bp), PACK(size, 0));
-    } else if (!prev_alloc && next_alloc) {
+        PUT_SEG_LIST(HDRP(bp), PACK(size, 0));  /* Set header on seg list */
+        PUT_SEG_LIST(FTRP(bp), PACK(size, 0));  /* Set footer on seg list */
+    } else if (!prev_alloc && next_alloc) {    /* Case 3 */
+        /* printf("Running Case 3 of coalesce \n");*/
         remove_block(bp);
         remove_block(PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT_SEG_LIST(FTRP(bp), PACK(size, 0));
         PUT_SEG_LIST(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
-    } else {
+    } else {                                  /* Case 4 */
+        /* printf("Running Case 4 of coalesce \n"); */
         remove_block(bp);
         remove_block(PREV_BLKP(bp));
         remove_block(NEXT_BLKP(bp));
@@ -357,29 +385,27 @@ static void *coalesce(void *bp)
     return bp;
 }
 
-static void *place(void *bp, size_t asize)
+static void *place(void *bp, size_t asize) /* Place on seg list */
 {
-    size_t ptr_size = GET_SIZE(HDRP(bp));
-    size_t remainder = ptr_size - asize;
+    size_t csize = GET_SIZE(HDRP(bp)); /* Size of current block */
 
-    remove_block(bp);
+    size_t remainder = csize - asize; /* Calculate this once to optimize efficiency */
 
-
-    if (remainder <= DSIZE * 2) {
-        // Do not split block
-        PUT_SEG_LIST(HDRP(bp), PACK(ptr_size, 1));
-        PUT_SEG_LIST(FTRP(bp), PACK(ptr_size, 1));
+    if (remainder <= OVERHEAD) {
+        /* Already fits just put in seg list */
+        PUT_SEG_LIST(HDRP(bp), PACK(csize, 1));
+        PUT_SEG_LIST(FTRP(bp), PACK(csize, 1));
+        remove_block(bp);
     }
 
-    else if (asize >= 100) {
-        // Split block
+    else if (asize >= 50) { /* If it's large, pack by asize - needs more space*/
         PUT_SEG_LIST(HDRP(bp), PACK(remainder, 0));
         PUT_SEG_LIST(FTRP(bp), PACK(remainder, 0));
         PUT(HDRP(NEXT_BLKP(bp)), PACK(asize, 1));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(asize, 1));
+        remove_block(bp);
         add_block(bp, remainder);
         return NEXT_BLKP(bp);
-
     }
 
     else {
@@ -387,6 +413,7 @@ static void *place(void *bp, size_t asize)
         PUT_SEG_LIST(FTRP(bp), PACK(asize, 1));
         PUT(HDRP(NEXT_BLKP(bp)), PACK(remainder, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(remainder, 0));
+        remove_block(bp);
         add_block(NEXT_BLKP(bp), remainder);
     }
     return bp;
