@@ -80,12 +80,13 @@ static void *place(void *bp, size_t asize);
 static void *add_block(void *bp, size_t size);
 static void *remove_block(void *bp);
 
-char *heap_listp; /* Points to very first block of heap, for mm_check()*/
+char *heap_listp; /* Points to very first block of heap, for mm_check*/
 
 int mm_init(void)
 {
+  int i;
   /* Initialize free segregated list*/
-    for (int i = 0; i < MAX_SEGLIST_SIZE; i++) {
+    for (i = 0; i < MAX_SEGLIST_SIZE; i++) {
         seg_list[i] = NULL;
     }
 
@@ -211,7 +212,6 @@ void *mm_realloc(void *bp, size_t size)
             PUT(FTRP(bp), PACK(new_size + remainder, 1));
         } else {
             new_bp = mm_malloc(new_size - DSIZE);
-            memcpy(new_bp, bp, MIN(size, new_size));
             mm_free(bp);
         }
         block_buffer = GET_SIZE(HDRP(new_bp)) - new_size;
@@ -299,19 +299,13 @@ static void *add_block(void *bp, size_t size) {
 }
 
 
-static void *remove_block(void *bp) { /* Remove on segmented list */
-    int i = 0;
+static void *remove_block(void *bp) {
+    int list = 0;
     size_t size = GET_SIZE(HDRP(bp));
 
-    /* Why does this seg fault???
-    for (int i = 0; (i < MAX_SEGLIST_SIZE) && (size > 1); i++) {
-      size = size / 2;
-    } */
-
-
-    while ((i < MAX_SEGLIST_SIZE - 1) && (size > 1)) {
+    while ((list < MAX_SEGLIST_SIZE - 1) && (size > 1)) {
         size = size / 2;
-        i++;
+        list++;
     }
 
     if (PREV_SEGP(bp) != NULL) {
@@ -320,13 +314,13 @@ static void *remove_block(void *bp) { /* Remove on segmented list */
             SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), PREV_SEGP(bp));
         } else {
             SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NULL);
-            seg_list[i] = PREV_SEGP(bp);
+            seg_list[list] = PREV_SEGP(bp);
         }
     } else {
         if (NEXT_SEGP(bp) != NULL) {
             SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), NULL);
         } else {
-            seg_list[i] = NULL;
+            seg_list[list] = NULL;
         }
     }
     return bp;
@@ -336,41 +330,29 @@ static void *remove_block(void *bp) { /* Remove on segmented list */
 static void *coalesce(void *bp)
 {
     size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(bp)));
-
-    if (GET_TAG(HDRP(PREV_BLKP(bp)))) /* Check if the previous block is allocated */
-    {
-        prev_alloc = 1;
-    }
-
-    if (PREV_BLKP(bp) == bp) /* If bp is the only block, it must be allocated */
-    {
-      prev_alloc = 1;
-    }
-
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
 
-    if (prev_alloc && next_alloc) {           /* Case 1 */
-        /* printf("Running Case 1 of coalesce \n"); */
+    if (GET_TAG(HDRP(PREV_BLKP(bp))))
+        prev_alloc = 1;
+
+    if (prev_alloc && next_alloc) {
         return bp;
     }
-    else if (prev_alloc && !next_alloc) {     /* Case 2 */
-        /* printf("Running Case 2 of coalesce \n");*/
+    else if (prev_alloc && !next_alloc) {
         remove_block(bp);
         remove_block(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        PUT_SEG_LIST(HDRP(bp), PACK(size, 0));  /* Set header on seg list */
-        PUT_SEG_LIST(FTRP(bp), PACK(size, 0));  /* Set footer on seg list */
-    } else if (!prev_alloc && next_alloc) {    /* Case 3 */
-        /* printf("Running Case 3 of coalesce \n");*/
+        PUT_SEG_LIST(HDRP(bp), PACK(size, 0));
+        PUT_SEG_LIST(FTRP(bp), PACK(size, 0));
+    } else if (!prev_alloc && next_alloc) {
         remove_block(bp);
         remove_block(PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT_SEG_LIST(FTRP(bp), PACK(size, 0));
         PUT_SEG_LIST(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
-    } else {                                  /* Case 4 */
-        /* printf("Running Case 4 of coalesce \n"); */
+    } else {
         remove_block(bp);
         remove_block(PREV_BLKP(bp));
         remove_block(NEXT_BLKP(bp));
@@ -385,27 +367,29 @@ static void *coalesce(void *bp)
     return bp;
 }
 
-static void *place(void *bp, size_t asize) /* Place on seg list */
+static void *place(void *bp, size_t asize)
 {
-    size_t csize = GET_SIZE(HDRP(bp)); /* Size of current block */
+    size_t ptr_size = GET_SIZE(HDRP(bp));
+    size_t remainder = ptr_size - asize;
 
-    size_t remainder = csize - asize; /* Calculate this once to optimize efficiency */
+    remove_block(bp);
 
-    if (remainder <= OVERHEAD) {
-        /* Already fits just put in seg list */
-        PUT_SEG_LIST(HDRP(bp), PACK(csize, 1));
-        PUT_SEG_LIST(FTRP(bp), PACK(csize, 1));
-        remove_block(bp);
+
+    if (remainder <= DSIZE * 2) {
+        // Do not split block
+        PUT_SEG_LIST(HDRP(bp), PACK(ptr_size, 1));
+        PUT_SEG_LIST(FTRP(bp), PACK(ptr_size, 1));
     }
 
-    else if (asize >= 50) { /* If it's large, pack by asize - needs more space*/
+    else if (asize >= 100) {
+        // Split block
         PUT_SEG_LIST(HDRP(bp), PACK(remainder, 0));
         PUT_SEG_LIST(FTRP(bp), PACK(remainder, 0));
         PUT(HDRP(NEXT_BLKP(bp)), PACK(asize, 1));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(asize, 1));
-        remove_block(bp);
         add_block(bp, remainder);
         return NEXT_BLKP(bp);
+
     }
 
     else {
@@ -413,7 +397,6 @@ static void *place(void *bp, size_t asize) /* Place on seg list */
         PUT_SEG_LIST(FTRP(bp), PACK(asize, 1));
         PUT(HDRP(NEXT_BLKP(bp)), PACK(remainder, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(remainder, 0));
-        remove_block(bp);
         add_block(NEXT_BLKP(bp), remainder);
     }
     return bp;
