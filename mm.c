@@ -36,18 +36,18 @@ team_t team = {
 };
 
 #define ALIGNMENT               8
-#define ALIGN(size)             (((size) + (ALIGNMENT-1)) & ~0x7)
+#define ALIGN(size)             (((size) + (ALIGNMENT-1)) & ~0x7) /* All blocks are divisble by 8*/
 #define WSIZE                   4
 #define DSIZE                   8
 #define CHUNKSIZE               (1<<12)
-#define OVERHEAD                16
+#define OVERHEAD                16 /* Store user blocks */
 
-#define MAX_SEGLIST_SIZE        10
-#define REALLOC_BUFFER          (1<<7)
+#define MAX_SEGLIST_SIZE        10 /* Max number of classes */
+#define REALLOC_BUFFER          (1<<7) /* idky this number works, but it does and i give up on this lab*/
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
-#define PACK(size, alloc) ((size) | (alloc))
+#define PACK(size, alloc) ((size) | (alloc))  /* Pack data into one word size */
 
 #define GET(bp)                   (*(unsigned int *)(bp))      /* Read value at address */
 #define PUT(bp, val)              (*(unsigned int *)(bp) = (val))    /* Write value at address */
@@ -55,11 +55,12 @@ team_t team = {
 #define GET_SIZE(bp)               (GET(bp) & ~0x7) /* Read size at address */
 #define GET_ALLOC(bp)              (GET(bp) & 0x1) /* Check if block is allocated*/
 
-/* Tags for reallocation */
+/* Tags for allocation/reallocation */
 #define GET_TAG(p)                (GET(p) & 0x2)
 #define SET_RATAG(p)              (GET(p) = GET(p) | 0x2)
 #define REMOVE_RATAG(p)           (GET(p) = GET(p) & ~0x2)
 
+/* Physical heap macros */
 #define HDRP(bp)                  ((char *)(bp) - WSIZE)  /* Get header */
 #define FTRP(bp)                  ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE) /* Get footer */
 #define NEXT_BLKP(bp)             ((char *)(bp) + GET_SIZE((char *)(bp) - WSIZE)) /* Next physical block on heap */
@@ -67,6 +68,7 @@ team_t team = {
 #define PREV_FREEP(bp)            ((char *)(bp)) /* Previous free block on heap*/
 #define NEXT_FREEP(bp)            ((char *)(bp) + WSIZE) /* Next free block on heap */
 
+/* Free seg list macros */
 #define PREV_SEGP(bp)             (*(char **)(bp))  /* Previous block on seg list */
 #define NEXT_SEGP(bp)             (*(char **)(NEXT_FREEP(bp))) /* Next block on seg list */
 #define SET_PTR(p, bp)            (*(unsigned int *)(p) = (unsigned int)(bp)) /* Set pointer on seg list*/
@@ -78,6 +80,10 @@ static void *coalesce(void *bp);
 static void *place(void *bp, size_t asize);
 static void *add_block(void *bp, size_t size);
 static void *remove_block(void *bp);
+static int mm_check();
+static void checkblock(void *bp);
+static void printblock(void *bp);
+
 
 char *heap_listp; /* Points to very first block of heap, for mm_check*/
 
@@ -98,8 +104,12 @@ int mm_init(void)
     PUT(heap_listp + (3 * WSIZE), PACK(0, 1));          /* Epilogue*/
     heap_listp = (heap_listp + (2*WSIZE));
 
+    /* mm_check(); */
+
     if (extend_heap(CHUNKSIZE) == NULL)
         return -1;
+
+    /* mm_check();  //Check alignment after extending */
 
     return 0;
 }
@@ -137,7 +147,7 @@ void *mm_malloc(size_t size)
 
     int i = 0;
     size_t findClass = asize;
-    while (i < MAX_SEGLIST_SIZE) {
+    while (i < MAX_SEGLIST_SIZE) { /* Organize classes in ascending order */
         if (((seg_list[i] != NULL) && (findClass <= 1)) || (i == MAX_SEGLIST_SIZE - 1)) {
             bp = seg_list[i];
             while ((bp != NULL) && ((asize > GET_SIZE(HDRP(bp))) || (GET_TAG(HDRP(bp)))))
@@ -148,22 +158,23 @@ void *mm_malloc(size_t size)
                 break;
         }
 
-        findClass = findClass / 2;
+        findClass = findClass / 2; /* Classes are organized by powers of 2*/
         i++;
     }
     if (bp == NULL) {
-        extendsize = MAX(asize, CHUNKSIZE);
+        extendsize = MAX(asize, CHUNKSIZE); /* Get more memory if bp is null*/
 
         if ((bp = extend_heap(extendsize)) == NULL)
             return NULL;
     }
     bp = place(bp, asize);
+    /* mm_check()*/
     return bp;
 }
 
 void mm_free(void *bp)
 {
-    if (!bp)
+    if (!bp) /*Check if there's nothing to free*/
     {
       return;
     }
@@ -221,6 +232,7 @@ void *mm_realloc(void *bp, size_t size)
         }
         block_buffer = GET_SIZE(HDRP(ptr)) - asize;
     }
+    /*mm_check(); */
     /* Use RA Tags to keep from reallocating blocks that have already been */
     if (block_buffer < 2 * REALLOC_BUFFER)
         SET_RATAG(HDRP(NEXT_BLKP(ptr)));
@@ -241,11 +253,12 @@ static void *extend_heap(size_t size)
     if ((bp = mem_sbrk(asize)) == (void *)-1)
         return NULL;
 
-    // Set headers and footer
-    PUT(HDRP(bp), PACK(asize, 0));
-    PUT(FTRP(bp), PACK(asize, 0));
-    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));
+    PUT(HDRP(bp), PACK(asize, 0)); /* Set header */
+    PUT(FTRP(bp), PACK(asize, 0)); /* Set footer */
+    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* Set epilogue */
     add_block(bp, asize);
+
+    /* mm_check();*/
 
     return coalesce(bp);
 }
@@ -300,6 +313,7 @@ static void *add_block(void *bp, size_t size) {
             seg_list[findClass] = bp;
         }
     }
+    /* mm_check(); */
     return bp;
 }
 
@@ -328,6 +342,7 @@ static void *remove_block(void *bp) { /* remove block from seg list */
             seg_list[i] = NULL;
         }
     }
+    /* mm_check(); */
     return bp;
 }
 
@@ -370,6 +385,8 @@ static void *coalesce(void *bp)
         bp = PREV_BLKP(bp);
     }
 
+    /* mm_check(); */
+
     add_block(bp, size);
 
     return bp;
@@ -405,5 +422,90 @@ static void *place(void *bp, size_t asize) /* Place block on seg list*/
         PUT(FTRP(NEXT_BLKP(bp)), PACK(remainder, 0));
         add_block(NEXT_BLKP(bp), remainder);
     }
+    /* mm_check(); */
     return bp;
+}
+
+static int mm_check() { /* Check consistency of heap */
+  int ret_val = 1;
+  void *bp = heap_listp;
+  printf("Heap Pointer Address: %p \n", heap_listp);
+
+  /*Check for prologue header */
+  printf("Checking prologue header: \n");
+  checkblock(heap_listp); /*should indicate whether or not the alignment is off */
+  printblock(heap_listp);
+
+  if (!GET_ALLOC(HDRP(heap_listp)))
+  {
+    printf("Error: Prologue Header not allocated \n");
+    printf("Printing address of header: %d \n", GET(HDRP(heap_listp)));
+    ret_val = 0;
+  }
+  /* Traverse heap_listp */
+  int i = 0;
+  for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp))
+  {
+    if (i == 0)
+    {
+      printf("Traversing heap_listp...\n");
+      i+=1;
+    }
+    printblock(bp);
+    checkblock(bp);
+  }
+
+  /*Check for epilogue header */
+
+  if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
+  {
+    ret_val = 0;
+    printf("Error: Bad epliogue header \n");
+  }
+
+  int j = 0;
+  while ((seg_list[j] != NULL) && (j < MAX_SEGLIST_SIZE - 1))
+  {
+    bp = seg_list[j];
+    if (j == 0)
+    {
+      printf("Traversing seg_list...\n");
+    }
+    j++;
+    printblock(bp);
+    checkblock(bp);
+  }
+
+  return ret_val; /* Everything's fine*/
+}
+
+static void printblock(void *bp)
+{
+  int h_size, h_alloc, f_size, f_alloc;
+
+  h_size = GET_SIZE(HDRP(bp));
+  h_alloc = GET_ALLOC(HDRP(bp));
+  f_size = GET_SIZE(FTRP(bp));
+  f_alloc = GET_ALLOC(FTRP(bp));
+
+  if (h_size == 0) {
+    printf("%p: end of heap\n", bp);
+    return;
+  }
+  /* Check if header and footer are aligned for each block */
+  printf("%p: header: [%d:%c] footer: [%d:%c]\n", bp,
+  h_size, (h_alloc ? 'a' : 'f'),
+  f_size, (f_alloc ? 'a' : 'f'));
+}
+
+static void checkblock(void *bp)
+{
+
+  if ((size_t)bp % 8)
+  printf("Error: %p is not doubleword aligned\n", bp);
+
+  if (GET(HDRP(bp)) != GET(FTRP(bp)))
+  printf("Error: header does not match footer\n");
+  printf("Printing address of header: %d \n", GET(HDRP(bp)));
+  printf("Printing address of footer: %d\n", GET(FTRP(bp)));
 }
