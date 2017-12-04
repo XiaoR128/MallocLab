@@ -81,6 +81,7 @@ team_t team = {
 #define PREV_SEGP(bp)             (*(char **)(bp))  /* Previous block on seg list */
 #define NEXT_SEGP(bp)             (*(char **)(NEXT_FREEP(bp))) /* Next block on seg list */
 #define SET_PTR(p, bp)            (*(unsigned int *)(p) = (unsigned int)(bp)) /* Set pointer on seg list*/
+                                  /* Must be cast as unsigned to prevent NULL pointer warning*/
 
 void *seg_list[MAX_SEGLIST_SIZE]; /* Segmented list */
 
@@ -115,8 +116,9 @@ int mm_init(void)
     PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));      /* Prologue Footer (4 bytes)*/
     PUT(heap_listp + (3 * WSIZE), PACK(0, 1));          /* Epilogue*/
     heap_listp = (heap_listp + (2*WSIZE));
+    /* Point between prologue header and footer -> where user data starts*/
 
-    mm_check();
+    /* mm_check(); */
 
     if (extend_heap(CHUNKSIZE) == NULL)
         return -1;
@@ -162,29 +164,13 @@ void *mm_malloc(size_t size)
     size_t asize = MAX(ALIGN(size + DSIZE), OVERHEAD);
     bp = organizeClasses(bp, asize);
 
-    /* Arrange blocks by classes of 2^k*/
-
-    /*
-    size_t findClass = asize;
-    for (int i = 0; ((i < MAX_SEGLIST_SIZE) && (bp != NULL)); i++)
-    {
-      if (((findClass <= 1) && (seg_list[i] != NULL)) || (i == MAX_SEGLIST_SIZE - 1))
-      {
-        bp = seg_list[i];
-        while ((bp != NULL) && ((asize > GET_SIZE(HDRP(bp))) || (GET_TAG(HDRP(bp)))))
-        {
-          bp = PREV_SEGP(bp);
-        }
-      }
-      findClass = findClass / 2;
-    } */
     if (bp == NULL) {
         extendsize = MAX(asize, CHUNKSIZE); /* Get more memory if bp is null*/
         if ((bp = extend_heap(extendsize)) == NULL)
             return NULL;
     }
     bp = place(bp, asize);
-    /* mm_check()*/
+    /* mm_check(); */
     return bp;
 }
 
@@ -212,9 +198,9 @@ void *searchReallocBuffer(void *bp, void *ptr, size_t asize) {
   int extendsize;
   int remainder;
 
-  if (block_buffer < 0) { /*Make sure it's within the bounds of the heap */
+  if (block_buffer < 0) { /*Make sure the size you are trying to adjust isn't larger than current block size */
       if (!GET_ALLOC(HDRP(NEXT_BLKP(bp))) || !GET_SIZE(HDRP(NEXT_BLKP(bp)))) {
-          remainder = GET_SIZE(HDRP(bp)) + GET_SIZE(HDRP(NEXT_BLKP(bp))) - asize;
+          remainder = GET_SIZE(HDRP(bp)) + GET_SIZE(HDRP(NEXT_BLKP(bp))) - asize; /* Readjust size to fit */
           if (remainder < 0) {
               extendsize = MAX(remainder, CHUNKSIZE); /* Get more memory*/
               if (extend_heap(extendsize) == NULL)
@@ -233,7 +219,7 @@ void *searchReallocBuffer(void *bp, void *ptr, size_t asize) {
       }
       block_buffer = GET_SIZE(HDRP(ptr)) - asize;
   }
-  /*mm_check(); */
+  /* mm_check(); */
   /* Use RA Tags to keep from reallocating blocks that have already been */
   if (block_buffer < 2 * REALLOC_BUFFER)
       SET_RATAG(HDRP(NEXT_BLKP(ptr)));
@@ -268,6 +254,7 @@ static void *extend_heap(size_t size)
     void *bp;
     size_t asize = ALIGN(size);
     /*
+    From textbook but decreases efficiency
     asize = (size % 2) ? (size + 1) * WSIZE : size * WSIZE;
     if (size < OVERHEAD)
     {
@@ -347,7 +334,7 @@ static void *remove_block(void *bp) { /* remove block from seg list */
         i++;
     }
 
-    if (PREV_SEGP(bp) != NULL && NEXT_SEGP(bp) != NULL) /* */
+    if (PREV_SEGP(bp) != NULL && NEXT_SEGP(bp) != NULL)
     {
       SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NEXT_SEGP(bp));
       SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), PREV_SEGP(bp));
@@ -485,34 +472,6 @@ static int mm_check() { /* Check consistency of heap */
       ret_val = checkblock(bp);
   }
 
-  /* ascendig check
-size_t current;
-size_t next;
-
-  bp = seg_list[0];
-
-  if (bp != NULL)
-    for (i = 0; i < MAX_SEGLIST_SIZE; i++)
-    {
-
-      bp = seg_list[i];
-      exit(0);
-      if (bp != NULL)
-      {
-
-        while (NEXT_FREEP(bp) != NULL){
-
-          current = GET_SIZE(bp);
-
-          next = GET_SIZE(NEXT_SEGP(bp));
-          if (next < current)
-            printf("Error: Segment List is not in ascending order \n");
-            ret_val = 0;
-          bp = NEXT_FREEP(bp);
-        }
-      }
-    }
-    */
   /*Check for epilogue header */
 
   if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
@@ -528,6 +487,19 @@ size_t next;
     if (j == 0)
     {
       printf("Traversing seg_list...\n");
+    }
+    size_t csize;
+    size_t nextSize;
+    /* ascending check */
+    while (NEXT_SEGP(bp) != NULL){
+
+      csize = GET_SIZE(HDRP(bp)); /* Get current size */
+
+      nextSize = GET_SIZE(NEXT_SEGP(HDRP(bp))); /* Get next size */
+      if (nextSize < csize)
+        printf("Error: Segment List is not in ascending order \n");
+        ret_val = 0;
+      bp = NEXT_SEGP(bp);
     }
     j++;
     printblock(bp);
