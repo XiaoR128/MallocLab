@@ -52,7 +52,7 @@ team_t team = {
 #define OVERHEAD                16 /* Store user blocks */
 
 #define MAX_SEGLIST_SIZE        10 /* Max number of classes */
-#define REALLOC_BUFFER          (1<<7) /* idky this number works, but it does and i give up on this lab*/
+#define REALLOC_BUFFER          (1<<8) /* idky this number works, but it does and i give up on this lab*/
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
@@ -87,11 +87,14 @@ void *seg_list[MAX_SEGLIST_SIZE]; /* Segmented list */
 static void *extend_heap(size_t size);
 static void *coalesce(void *bp);
 static void *place(void *bp, size_t asize);
+static void *organizeClasses(void *ptr, size_t size);
+static void *searchReallocBuffer(void *bp, void* ptr, size_t size);
 static void *add_block(void *bp, size_t size);
 static void *remove_block(void *bp);
 static int mm_check();
-static void checkblock(void *bp);
+static int checkblock(void *bp);
 static void printblock(void *bp);
+
 
 
 char *heap_listp; /* Points to very first block of heap, for mm_check*/
@@ -113,7 +116,7 @@ int mm_init(void)
     PUT(heap_listp + (3 * WSIZE), PACK(0, 1));          /* Epilogue*/
     heap_listp = (heap_listp + (2*WSIZE));
 
-    /* mm_check(); */
+    mm_check();
 
     if (extend_heap(CHUNKSIZE) == NULL)
         return -1;
@@ -123,20 +126,42 @@ int mm_init(void)
     return 0;
 }
 
+static void *organizeClasses(void *ptr, size_t asize){
+  int i = 0;
+  size_t findClass = asize;
+  while (i < MAX_SEGLIST_SIZE) { /* Organize classes in ascending order*/
+      if (((seg_list[i] != NULL) && (findClass <= 1)) || (i == MAX_SEGLIST_SIZE - 1)) {
+          ptr = seg_list[i];
+          while ((ptr != NULL) && ((asize > GET_SIZE(HDRP(ptr))) || (GET_TAG(HDRP(ptr)))))
+          {
+              ptr = PREV_SEGP(ptr);
+          }
+          if (ptr != NULL)
+              break;
+      }
+
+      findClass = findClass / 2; /* Classes are organized by powers of 2*/
+      i++;
+  }
+  return ptr;
+}
+
 void *mm_malloc(size_t size)
 {
     size_t extendsize;
     void *bp = NULL;
 
-    if (heap_listp == 0)
+    if (heap_listp == 0) /* Call init if heap is empty*/
     {
       mm_init();
     }
 
-    if (size == 0)
+    if (size == 0) /*No memory to allocate, return null */
         return NULL;
 
-    size_t asize = MAX(ALIGN(size) + DSIZE, OVERHEAD);
+    size_t asize = MAX(ALIGN(size + DSIZE), OVERHEAD);
+    bp = organizeClasses(bp, asize);
+
     /* Arrange blocks by classes of 2^k*/
 
     /*
@@ -153,26 +178,8 @@ void *mm_malloc(size_t size)
       }
       findClass = findClass / 2;
     } */
-
-    int i = 0;
-    size_t findClass = asize;
-    while (i < MAX_SEGLIST_SIZE) { /* Organize classes in ascending order */
-        if (((seg_list[i] != NULL) && (findClass <= 1)) || (i == MAX_SEGLIST_SIZE - 1)) {
-            bp = seg_list[i];
-            while ((bp != NULL) && ((asize > GET_SIZE(HDRP(bp))) || (GET_TAG(HDRP(bp)))))
-            {
-                bp = PREV_SEGP(bp);
-            }
-            if (bp != NULL)
-                break;
-        }
-
-        findClass = findClass / 2; /* Classes are organized by powers of 2*/
-        i++;
-    }
     if (bp == NULL) {
         extendsize = MAX(asize, CHUNKSIZE); /* Get more memory if bp is null*/
-
         if ((bp = extend_heap(extendsize)) == NULL)
             return NULL;
     }
@@ -196,14 +203,48 @@ void mm_free(void *bp)
 
     add_block(bp, size);
     coalesce(bp);
-    return; /* idky this improves efficiency, but it does*/
+    return;
+}
+
+void *searchReallocBuffer(void *bp, void *ptr, size_t asize) {
+  asize += REALLOC_BUFFER;
+  int block_buffer = GET_SIZE(HDRP(bp)) - asize;
+  int extendsize;
+  int remainder;
+
+  if (block_buffer < 0) { /*Make sure it's within the bounds of the heap */
+      if (!GET_ALLOC(HDRP(NEXT_BLKP(bp))) || !GET_SIZE(HDRP(NEXT_BLKP(bp)))) {
+          remainder = GET_SIZE(HDRP(bp)) + GET_SIZE(HDRP(NEXT_BLKP(bp))) - asize;
+          if (remainder < 0) {
+              extendsize = MAX(remainder, CHUNKSIZE); /* Get more memory*/
+              if (extend_heap(extendsize) == NULL)
+                  return NULL;
+              remainder += extendsize;
+          }
+
+          remove_block(NEXT_BLKP(bp));
+
+          PUT(HDRP(bp), PACK(asize + remainder, 1));
+          PUT(FTRP(bp), PACK(asize + remainder, 1));
+      }
+      else {
+          ptr = mm_malloc(asize - DSIZE);
+          mm_free(bp);
+      }
+      block_buffer = GET_SIZE(HDRP(ptr)) - asize;
+  }
+  /*mm_check(); */
+  /* Use RA Tags to keep from reallocating blocks that have already been */
+  if (block_buffer < 2 * REALLOC_BUFFER)
+      SET_RATAG(HDRP(NEXT_BLKP(ptr)));
+
+  return ptr;
+
 }
 
 void *mm_realloc(void *bp, size_t size)
 {
     void *ptr = bp;
-    int remainder;
-    int extendsize;
 
     if (ptr == NULL)
     {
@@ -217,34 +258,8 @@ void *mm_realloc(void *bp, size_t size)
     }
 
     size_t asize = MAX(ALIGN(size + DSIZE), OVERHEAD);
+    ptr = searchReallocBuffer(bp, ptr, asize);
 
-    asize += REALLOC_BUFFER;
-    int block_buffer = GET_SIZE(HDRP(bp)) - asize;
-
-    if (block_buffer < 0) {
-        if (!GET_ALLOC(HDRP(NEXT_BLKP(bp))) || !GET_SIZE(HDRP(NEXT_BLKP(bp)))) {
-            remainder = GET_SIZE(HDRP(bp)) + GET_SIZE(HDRP(NEXT_BLKP(bp))) - asize;
-            if (remainder < 0) {
-                extendsize = MAX(remainder, CHUNKSIZE); /* Get more memory*/
-                if (extend_heap(extendsize) == NULL)
-                    return NULL;
-                remainder += extendsize;
-            }
-
-            remove_block(NEXT_BLKP(bp));
-
-            PUT(HDRP(bp), PACK(asize + remainder, 1));
-            PUT(FTRP(bp), PACK(asize + remainder, 1));
-        } else {
-            ptr = mm_malloc(asize - DSIZE);
-            mm_free(bp);
-        }
-        block_buffer = GET_SIZE(HDRP(ptr)) - asize;
-    }
-    /*mm_check(); */
-    /* Use RA Tags to keep from reallocating blocks that have already been */
-    if (block_buffer < 2 * REALLOC_BUFFER)
-        SET_RATAG(HDRP(NEXT_BLKP(ptr)));
     return ptr;
 }
 
@@ -288,39 +303,35 @@ static void *add_block(void *bp, size_t size) {
         insert = search;
         search = PREV_SEGP(search);
     }
-
-    if (search)
-    { /* Watch out for null access errors!!! */
-        if (!insert)
-        {
-          /* printf("Running 1a of add_block/n"); */
-          SET_PTR(PREV_FREEP(bp), search);
-          SET_PTR(NEXT_FREEP(search), bp);
-          SET_PTR(NEXT_FREEP(bp), NULL);
-          seg_list[findClass] = bp;
-        }
-        else
-        {
-          /* printf("Running 1b of add_block\n"); */
-          SET_PTR(PREV_FREEP(bp), search);
-          SET_PTR(NEXT_FREEP(search), bp);
-          SET_PTR(NEXT_FREEP(bp), insert);
-          SET_PTR(PREV_FREEP(insert), bp);
-        }
-    }
-    else if (!search)
+    if (search && insert)
     {
-        if (insert) {
-            /* printf("Running 2a of add_block\n"); */
-            SET_PTR(PREV_FREEP(bp), NULL);
-            SET_PTR(NEXT_FREEP(bp), insert);
-            SET_PTR(PREV_FREEP(insert), bp);
-        } else {
-            /* printf("Running 2b of add_block\n"); */
-            SET_PTR(PREV_FREEP(bp), NULL);
-            SET_PTR(NEXT_FREEP(bp), NULL);
-            seg_list[findClass] = bp;
-        }
+      /* printf("Running 1b of add_block\n"); */
+      SET_PTR(PREV_FREEP(bp), search);
+      SET_PTR(NEXT_FREEP(search), bp);
+      SET_PTR(NEXT_FREEP(bp), insert);
+      SET_PTR(PREV_FREEP(insert), bp);
+    }
+    else if (search && !insert)
+    {
+      /* printf("Running 1a of add_block/n"); */
+      SET_PTR(PREV_FREEP(bp), search);
+      SET_PTR(NEXT_FREEP(search), bp);
+      SET_PTR(NEXT_FREEP(bp), NULL);
+      seg_list[findClass] = bp;
+    }
+    else if (!search && insert)
+    {
+      /* printf("Running 2a of add_block\n"); */
+      SET_PTR(PREV_FREEP(bp), NULL);
+      SET_PTR(NEXT_FREEP(bp), insert);
+      SET_PTR(PREV_FREEP(insert), bp);
+    }
+
+    else{
+      /* printf("Running 2b of add_block\n"); */
+      SET_PTR(PREV_FREEP(bp), NULL);
+      SET_PTR(NEXT_FREEP(bp), NULL);
+      seg_list[findClass] = bp;
     }
     /* mm_check(); */
     return bp;
@@ -336,21 +347,26 @@ static void *remove_block(void *bp) { /* remove block from seg list */
         i++;
     }
 
-    if (PREV_SEGP(bp) != NULL) {
-        if (NEXT_SEGP(bp) != NULL) {
-            SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NEXT_SEGP(bp));
-            SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), PREV_SEGP(bp));
-        } else {
-            SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NULL);
-            seg_list[i] = PREV_SEGP(bp);
-        }
-    } else {
-        if (NEXT_SEGP(bp) != NULL) {
-            SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), NULL);
-        } else {
-            seg_list[i] = NULL;
-        }
+    if (PREV_SEGP(bp) != NULL && NEXT_SEGP(bp) != NULL) /* */
+    {
+      SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NEXT_SEGP(bp));
+      SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), PREV_SEGP(bp));
     }
+
+    else if (PREV_SEGP(bp) != NULL && NEXT_SEGP(bp) == NULL)
+    {
+      SET_PTR(NEXT_FREEP(PREV_SEGP(bp)), NULL);
+      seg_list[i] = PREV_SEGP(bp);
+    }
+
+    else if (PREV_SEGP(bp) == NULL && NEXT_SEGP(bp) != NULL)
+    {
+      SET_PTR(PREV_FREEP(NEXT_SEGP(bp)), NULL);
+    }
+    else{
+      seg_list[i] = NULL;
+    }
+
     /* mm_check(); */
     return bp;
 }
@@ -377,6 +393,7 @@ static void *coalesce(void *bp)
         remove_block(bp);
         remove_block(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        /* Put newly freed blocks on seg list*/
         PUT_SEG_LIST(HDRP(bp), PACK(size, 0));
         PUT_SEG_LIST(FTRP(bp), PACK(size, 0));
     } else if (!prev_alloc && next_alloc) { /* Case 3 */
@@ -420,7 +437,7 @@ static void *place(void *bp, size_t asize) /* Place block on seg list*/
         /* Split block if it's too large*/
         PUT_SEG_LIST(HDRP(bp), PACK(remainder, 0));
         PUT_SEG_LIST(FTRP(bp), PACK(remainder, 0));
-        PUT(HDRP(NEXT_BLKP(bp)), PACK(asize, 1)); /* Pack by asize */
+        PUT(HDRP(NEXT_BLKP(bp)), PACK(asize, 1)); /* Pack by asize*/
         PUT(FTRP(NEXT_BLKP(bp)), PACK(asize, 1));
         add_block(bp, remainder);
         return NEXT_BLKP(bp);
@@ -444,7 +461,8 @@ static int mm_check() { /* Check consistency of heap */
 
   /*Check for prologue header */
   printf("Checking prologue header: \n");
-  checkblock(heap_listp); /*should indicate whether or not the alignment is off */
+  if (checkblock(heap_listp) == 0)
+    ret_val = checkblock(heap_listp); /*should indicate whether or not the alignment is off */
   printblock(heap_listp);
 
   if (!GET_ALLOC(HDRP(heap_listp)))
@@ -463,9 +481,38 @@ static int mm_check() { /* Check consistency of heap */
       i+=1;
     }
     printblock(bp);
-    checkblock(bp);
+    if (checkblock(heap_listp) == 0)
+      ret_val = checkblock(bp);
   }
 
+  /* ascendig check
+size_t current;
+size_t next;
+
+  bp = seg_list[0];
+
+  if (bp != NULL)
+    for (i = 0; i < MAX_SEGLIST_SIZE; i++)
+    {
+
+      bp = seg_list[i];
+      exit(0);
+      if (bp != NULL)
+      {
+
+        while (NEXT_FREEP(bp) != NULL){
+
+          current = GET_SIZE(bp);
+
+          next = GET_SIZE(NEXT_SEGP(bp));
+          if (next < current)
+            printf("Error: Segment List is not in ascending order \n");
+            ret_val = 0;
+          bp = NEXT_FREEP(bp);
+        }
+      }
+    }
+    */
   /*Check for epilogue header */
 
   if ((GET_SIZE(HDRP(bp)) != 0) || !(GET_ALLOC(HDRP(bp))))
@@ -490,33 +537,40 @@ static int mm_check() { /* Check consistency of heap */
   return ret_val; /* Everything's fine*/
 }
 
-static void printblock(void *bp)
+static void printblock(void *bp) /* rewrite */
 {
-  int h_size, h_alloc, f_size, f_alloc;
+  int hsize, halloc, fsize, falloc;
 
-  h_size = GET_SIZE(HDRP(bp));
-  h_alloc = GET_ALLOC(HDRP(bp));
-  f_size = GET_SIZE(FTRP(bp));
-  f_alloc = GET_ALLOC(FTRP(bp));
+  hsize = GET_SIZE(HDRP(bp));
+  halloc = GET_ALLOC(HDRP(bp));
+  fsize = GET_SIZE(FTRP(bp));
+  falloc = GET_ALLOC(FTRP(bp));
 
-  if (h_size == 0) {
+  if (hsize == 0) {
     printf("%p: end of heap\n", bp);
     return;
   }
   /* Check if header and footer are aligned for each block */
   printf("%p: header: [%d:%c] footer: [%d:%c]\n", bp,
-  h_size, (h_alloc ? 'a' : 'f'),
-  f_size, (f_alloc ? 'a' : 'f'));
+  hsize, (halloc ? 'a' : 'f'),
+  fsize, (falloc ? 'a' : 'f'));
 }
 
-static void checkblock(void *bp)
+static int checkblock(void *bp)
 {
+  printf("Printing address of header: %d \n", GET(HDRP(bp)));
+  printf("Printing address of footer: %d\n", GET(FTRP(bp)));
 
-  if ((size_t)bp % 8)
-  printf("Error: %p is not doubleword aligned\n", bp);
+  if ((GET_SIZE(bp) % 8) != 0)
+  {
+    printf("Error: %p is not doubleword aligned\n", bp);
+    return 0;
+  }
+
 
   if (GET(HDRP(bp)) != GET(FTRP(bp)))
   printf("Error: header does not match footer\n");
-  printf("Printing address of header: %d \n", GET(HDRP(bp)));
-  printf("Printing address of footer: %d\n", GET(FTRP(bp)));
+  return 0;
+
+  return 1;
 }
